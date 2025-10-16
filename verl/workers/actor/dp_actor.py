@@ -455,6 +455,24 @@ class DataParallelPPOActor(BasePPOActor):
                         rollout_log_probs=rollout_log_probs,
                     )
 
+                    positive_mask = (advantages > 0).float() * response_mask
+                    negative_mask = (advantages <= 0).float() * response_mask
+                    ratio = torch.exp(log_prob - old_log_prob)
+                    ratio_positive = verl_F.masked_mean(ratio, positive_mask)
+                    ratio_negative = verl_F.masked_mean(ratio, negative_mask)
+                    micro_batch_metrics["actor/ratio_positive"] = ratio_positive.detach().item()
+                    micro_batch_metrics["actor/ratio_negative"] = ratio_negative.detach().item()
+
+                    prob = torch.exp(log_prob)
+                    old_prob = torch.exp(old_log_prob)
+                    dpo_topr_gradient_negative = prob*(1-prob)/(prob + old_prob)
+                    dpo_topr_gradient_positive = old_prob*prob*(1-prob)/((prob**2) + (prob*old_prob))
+
+                    theoretical_gradient_positive = verl_F.masked_mean(dpo_topr_gradient_positive, positive_mask*response_mask)
+                    theoretical_gradient_negative = verl_F.masked_mean(dpo_topr_gradient_negative, negative_mask*response_mask)
+                    micro_batch_metrics["actor/theoretical_gradient_positive"] = theoretical_gradient_positive.detach().item()
+                    micro_batch_metrics["actor/theoretical_gradient_negative"] = theoretical_gradient_negative.detach().item()
+
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
@@ -482,12 +500,24 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * loss_scale_factor
                     loss.backward()
 
+                    mean_pi_prob = torch.exp(log_prob).masked_select(response_mask.bool()).mean()
+                    mean_old_pi_prob = torch.exp(old_log_prob).masked_select(response_mask.bool()).mean()
+                    min_pi_prob = torch.exp(log_prob).masked_select(response_mask.bool()).min()
+                    max_pi_prob = torch.exp(log_prob).masked_select(response_mask.bool()).max()
+                    min_old_pi_prob = torch.exp(old_log_prob).masked_select(response_mask.bool()).min()
+                    max_old_pi_prob = torch.exp(old_log_prob).masked_select(response_mask.bool()).max()
                     micro_batch_metrics.update(
                         {
                             "actor/pg_loss": pg_loss.detach().item() * loss_scale_factor,
                             "actor/pg_clipfrac": pg_clipfrac.detach().item(),
                             "actor/ppo_kl": ppo_kl.detach().item(),
                             "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
+                            "actor/mean_pi_prob": mean_pi_prob.detach().item(),
+                            "actor/mean_old_pi_prob": mean_old_pi_prob.detach().item(),
+                            "actor/min_pi_prob": min_pi_prob.detach().item(),
+                            "actor/max_pi_prob": max_pi_prob.detach().item(),
+                            "actor/min_old_pi_prob": min_old_pi_prob.detach().item(),
+                            "actor/max_old_pi_prob": max_old_pi_prob.detach().item(),
                         }
                     )
                     append_to_dict(metrics, micro_batch_metrics)

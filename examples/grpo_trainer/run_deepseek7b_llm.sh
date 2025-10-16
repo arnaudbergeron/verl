@@ -1,3 +1,24 @@
+#!/bin/bash
+#SBATCH --gpus-per-task=a100l:4
+#SBATCH --cpus-per-task=8
+#SBATCH --job-name=gsm_vrl
+#SBATCH --output=job_output2.txt
+#SBATCH --error=job_error2.txt
+#SBATCH --ntasks=1
+#SBATCH --mem=256Gb
+#SBATCH --time=2:30:00
+
+module load anaconda
+conda activate verlhf
+module load cuda/12.4.0
+
+
+source /home/mila/a/arnaud.bergeron1/scratch/verl/.env
+NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+
+unset ROCR_VISIBLE_DEVICES
+export VLLM_ATTENTION_BACKEND=XFORMERS
+
 set -x
 
 python3 -m verl.trainer.main_ppo \
@@ -30,10 +51,10 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.logger=console \
+    trainer.logger='["console","wandb"]' \
     trainer.project_name='verl_grpo_example_gsm8k' \
-    trainer.experiment_name='deepseek_llm_7b_function_rm' \
-    trainer.n_gpus_per_node=8 \
+    trainer.experiment_name='deepseek_llm_7b_function_rm_' \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=5 \

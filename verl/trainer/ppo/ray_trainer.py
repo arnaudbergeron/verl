@@ -21,6 +21,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import uuid
+import copy
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -1097,9 +1098,11 @@ class RayPPOTrainer:
                             "norm_adv_by_std_in_grpo", True
                         )  # GRPO adv normalization factor
 
+                        adv_estimator = self.config.algorithm.adv_estimator
+
                         batch = compute_advantage(
                             batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
+                            adv_estimator=adv_estimator,
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
                             num_repeat=self.config.actor_rollout_ref.rollout.n,
@@ -1120,8 +1123,11 @@ class RayPPOTrainer:
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
-                        metrics.update(actor_output_metrics)
+                        # actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        actor_output_metrics = actor_output.meta_info['metrics']
+                        # metrics.update(actor_output_metrics)
+                        len_actor_output_metrics = len(actor_output_metrics["actor/grad_norm"])
+
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
@@ -1218,10 +1224,27 @@ class RayPPOTrainer:
                     self.train_dataloader.sampler.update(batch=batch)
 
                 # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps)
+                if not hasattr(self, '_step_log'):
+                    _step_log = self.global_steps
+                else:
+                    _step_log = self._step_log
+
+                logger.log(data=metrics, step=_step_log)
+                for metrics_idx in range(len_actor_output_metrics):
+                    _actor_metric_current = {}
+                    for actor_key, actor_value in actor_output_metrics.items():
+                        if isinstance(actor_value, list):
+                            _actor_metric_current[actor_key] = actor_value[metrics_idx]
+                        else:
+                            _actor_metric_current[actor_key] = actor_value
+
+                    # _metrics.update(_actor_metric_current)
+                    logger.log(data=_actor_metric_current, step=_step_log)
+                    _step_log += 1 # S/len_actor_output_metrics
 
                 progress_bar.update(1)
                 self.global_steps += 1
+                self._step_log = _step_log
 
                 if (
                     hasattr(self.config.actor_rollout_ref.actor, "profiler")

@@ -120,6 +120,9 @@ ENV/
 # data
 *.parquet
 
+grad.ipynb
+job_*.txt
+models/
 
 # local logs
 logs

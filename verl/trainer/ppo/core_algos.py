@@ -102,6 +102,7 @@ class AdvantageEstimator(str, Enum):
     OPO = "opo"
     GRPO_PASSK = "grpo_passk"
     GPG = "gpg"
+    NO_ESTIMATOR = 'no_estimator'
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -255,6 +256,43 @@ def compute_gae_advantage_return(
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
+
+
+@register_adv_est(AdvantageEstimator.NO_ESTIMATOR)
+def compute_no_estimation_advantage_return(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor = None,
+    response_mask: torch.Tensor = None,
+    gamma: torch.Tensor = None,
+    lam: torch.Tensor = None,
+    index: np.ndarray = None,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+):
+    """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py
+
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape is (bs, response_length)
+        values: `(torch.Tensor)`
+            shape is (bs, response_length)
+        response_mask: `(torch.Tensor)`
+            shape is (bs, response_length). [EOS] mask. The token after [EOS] have mask zero.
+        gamma is `(float)`
+            discounted factor used in RL
+        lam: `(float)`
+            lambda value when computing Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length)
+        Returns: `(torch.Tensor)`
+            shape: (bs, response_length)
+
+    """
+    expanded_rw = token_level_rewards.max(dim=-1, keepdim=True).values * response_mask
+    expanded_rw = (2*expanded_rw)-1
+    return expanded_rw, expanded_rw.detach().clone()
 
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
@@ -896,6 +934,147 @@ def compute_policy_loss_vanilla(
         tis_imp_ratio = torch.exp(old_log_prob - rollout_log_probs)
         tis_imp_ratio = torch.clamp(tis_imp_ratio, max=config.tis_imp_ratio_cap)
         pg_losses = pg_losses * tis_imp_ratio
+
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
+
+@register_policy_loss("dpo_topr")
+def compute_policy_loss_dpo_topr(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | AlgoConfig] = None,
+    rollout_log_probs: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    DPO topr loss.
+
+    Adapted from
+    https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
+
+    Args:
+        old_log_prob (torch.Tensor):
+            Log-probabilities of actions under the old policy, shape (batch_size, response_length).
+        log_prob (torch.Tensor):
+            Log-probabilities of actions under the current policy, shape (batch_size, response_length).
+        advantages (torch.Tensor):
+            Advantage estimates for each action, shape (batch_size, response_length).
+        response_mask (torch.Tensor):
+            Mask indicating which tokens to include in the loss, shape (batch_size, response_length).
+        loss_agg_mode (str, optional):
+            Aggregation mode for `agg_loss`. Defaults to "token-mean".
+        config: `(verl.trainer.config.ActorConfig)`:
+            config for the actor.
+        rollout_log_probs: `(torch.Tensor)`:
+            log probabilities of actions under the rollout policy, shape (batch_size, response_length).
+    """
+
+    assert config is not None
+    assert not isinstance(config, AlgoConfig)
+
+    negative_approx_kl = log_prob - old_log_prob
+    ratio = torch.exp(negative_approx_kl)
+    prob = torch.exp(log_prob)
+    old_prob = torch.exp(old_log_prob)
+
+    positive_loss = torch.log(prob/(prob + old_prob))
+    negative_loss = torch.log(old_prob/(prob + old_prob))
+
+    positive_mask = (advantages > 0).float()
+    negative_mask = (advantages <= 0).float()
+    pg_losses = -positive_loss * positive_mask - negative_loss * negative_mask
+
+    pg_losses = pg_losses * advantages.abs()
+
+    # Clamp negative_approx_kl for stability
+    ratio = torch.exp(negative_approx_kl)
+    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_clipfrac = verl_F.masked_mean(ratio, positive_mask*response_mask)
+    pg_clipfrac_lower = verl_F.masked_mean(ratio, negative_mask*response_mask)
+
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
+
+
+@register_policy_loss("topr")
+def compute_policy_loss_topr(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | AlgoConfig] = None,
+    rollout_log_probs: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    TOPR loss.
+
+    Args:
+        old_log_prob (torch.Tensor):
+            Log-probabilities of actions under the old policy, shape (batch_size, response_length).
+        log_prob (torch.Tensor):
+            Log-probabilities of actions under the current policy, shape (batch_size, response_length).
+        advantages (torch.Tensor):
+            Advantage estimates for each action, shape (batch_size, response_length).
+        response_mask (torch.Tensor):
+            Mask indicating which tokens to include in the loss, shape (batch_size, response_length).
+        loss_agg_mode (str, optional):
+            Aggregation mode for `agg_loss`. Defaults to "token-mean".
+        config: `(verl.trainer.config.ActorConfig)`:
+            config for the actor.
+        rollout_log_probs: `(torch.Tensor)`:
+            log probabilities of actions under the rollout policy, shape (batch_size, response_length).
+    """
+
+    assert config is not None
+    assert not isinstance(config, AlgoConfig)
+    topr_clip_negative_low, topr_clip_negative_high = 0,1
+    topr_clip_positive_low, topr_clip_positive_high = 1,1
+
+    negative_approx_kl = log_prob - old_log_prob
+    ratio = torch.exp(negative_approx_kl)
+
+    low_clip_mask_negative = ratio <= topr_clip_negative_low
+    high_clip_mask_negative = ratio > topr_clip_negative_high
+
+    loss_low_clip_negative = -advantages * topr_clip_negative_low * negative_approx_kl
+    loss_high_clip_negative = -advantages * topr_clip_negative_high * negative_approx_kl
+    no_clip_loss = -advantages * ratio
+
+
+    negative_loss = torch.where(low_clip_mask_negative, loss_low_clip_negative, no_clip_loss)
+    negative_loss = torch.where(high_clip_mask_negative, loss_high_clip_negative, negative_loss)
+
+
+    low_clip_mask_positive = ratio <= topr_clip_positive_low
+    high_clip_mask_positive = ratio > topr_clip_positive_high
+
+    loss_low_clip_positive = -advantages * topr_clip_positive_low * negative_approx_kl
+    loss_high_clip_positive = -advantages * topr_clip_positive_high * negative_approx_kl
+
+    positive_loss = torch.where(low_clip_mask_positive, loss_low_clip_positive, no_clip_loss)
+    positive_loss = torch.where(high_clip_mask_positive, loss_high_clip_positive, positive_loss)
+
+    positive_mask = (advantages > 0).float()
+    negative_mask = (advantages <= 0).float()
+
+    pg_losses = positive_loss * positive_mask + negative_loss * negative_mask
+
+    # Clamp negative_approx_kl for stability
+    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
+    ratio = torch.exp(negative_approx_kl)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+
+    pg_clipfrac = verl_F.masked_mean(ratio, positive_mask*response_mask)
+    pg_clipfrac_lower = verl_F.masked_mean(ratio, negative_mask*response_mask)
+
 
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
