@@ -1,43 +1,36 @@
-#!/bin/bash
-#SBATCH --gpus-per-task=a100l:1
-#SBATCH --cpus-per-task=8
-#SBATCH --job-name=gsm_vrl
-#SBATCH --output=job_output2.txt
-#SBATCH --error=job_error2.txt
-#SBATCH --ntasks=1
-#SBATCH --mem=256Gb
-#SBATCH --time=4:30:00
+set -ex
+source /home/.env
 
-module load anaconda
-conda activate verlhf
-module load cuda/12.4.0
-
-
-source /home/mila/a/arnaud.bergeron1/scratch/verl/.env
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-NOW=$(date +%Y%m%d)
-export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
-export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=topr-4096-off-policy-001lr-no-adv-0.5b-${NOW}
-MODEL_PATH=/home/mila/a/arnaud.bergeron1/scratch/verl/models/qwen_0.5B
+export WANDB_DIR=${WANDB_DIR}
+export WANDB_PROJECT=${WANDB_PROJECT}
+export WANDB_EXP=${WANDB_EXP}
+export VLLM_ATTENTION_BACKEND=XFORMERS
+export WANDB_API_KEY=${WANDB_API_KEY}
 
-set -x
+SCRATCH_HOME="/home/mila/a/arnaud.bergeron1/scratch/verl"
+MODEL_PATH="/home/models/qwen_0.5B"
+NOW=$(date +%Y%m%d)
+WANDB_DIR="gsm8k-grpo-lora-qwen2.5-0.5b"
+WANDB_PROJECT=${WANDB_DIR}
+WANDB_EXP="gpro-4epoch-4096-bf16-zero-inside-docker-no-kl-001lr-0.5b-${NOW}"
+
+cd /home
+pip install --no-deps -e .
+
 nproc_per_gpu=32
 nnodes=1
 ngpu_per_node=1
 total_procs=$(( nproc_per_gpu * nnodes * ngpu_per_node ))
 mini_batch_size=$(( total_procs ))
-unset ROCR_VISIBLE_DEVICES
-export VLLM_ATTENTION_BACKEND=XFORMERS
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=no_estimator \
-    actor_rollout_ref.actor.policy_loss.loss_mode=topr \
-    data.train_files=$HOME/data/gsm8k/train.parquet \
-    data.val_files=$HOME/data/gsm8k/test.parquet \
-    data.train_batch_size=4096 \
+    algorithm.norm_adv_by_std_in_grpo=True \
+    data.train_files=/home/data/gsm8k/train.parquet \
+    data.val_files=/home/data/gsm8k/test.parquet \
+    data.train_batch_size=512 \
     data.val_batch_size=${total_procs} \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
@@ -50,7 +43,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.lora_rank=32 \
     actor_rollout_ref.model.lora_alpha=32 \
     actor_rollout_ref.model.target_modules=all-linear \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr=5e-5 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=${mini_batch_size} \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${mini_batch_size} \
@@ -59,12 +52,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=${mini_batch_size} \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.1 \
     actor_rollout_ref.rollout.n=5 \
     actor_rollout_ref.rollout.max_num_seqs=512 \
     actor_rollout_ref.rollout.max_model_len=1536 \
@@ -73,12 +66,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.layered_summon=True \
     actor_rollout_ref.ref.log_prob_micro_batch_size=${mini_batch_size} \
-    actor_rollout_ref.ref.fsdp_config.param_offload=False \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
-    actor_rollout_ref.actor.entropy_coeff=0.001 \
-    algorithm.kl_ctrl.kl_coef=0.001 \
+    actor_rollout_ref.actor.entropy_coeff=0.00 \
+    algorithm.kl_ctrl.kl_coef=0.00 \
     algorithm.use_kl_in_reward=False \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name=${WANDB_PROJECT} \
@@ -86,5 +79,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
-    trainer.test_freq=1 \
+    trainer.test_freq=5 \
     trainer.total_epochs=4 $@ 

@@ -103,6 +103,7 @@ class AdvantageEstimator(str, Enum):
     GRPO_PASSK = "grpo_passk"
     GPG = "gpg"
     NO_ESTIMATOR = 'no_estimator'
+    BASELINE = 'baseline'
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -292,6 +293,45 @@ def compute_no_estimation_advantage_return(
     """
     expanded_rw = token_level_rewards.max(dim=-1, keepdim=True).values * response_mask
     expanded_rw = (2*expanded_rw)-1
+    return expanded_rw, expanded_rw.detach().clone()
+
+
+@register_adv_est(AdvantageEstimator.BASELINE)
+def compute_no_estimation_advantage_return(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor = None,
+    response_mask: torch.Tensor = None,
+    gamma: torch.Tensor = None,
+    lam: torch.Tensor = None,
+    index: np.ndarray = None,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+):
+    """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py
+
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape is (bs, response_length)
+        values: `(torch.Tensor)`
+            shape is (bs, response_length)
+        response_mask: `(torch.Tensor)`
+            shape is (bs, response_length). [EOS] mask. The token after [EOS] have mask zero.
+        gamma is `(float)`
+            discounted factor used in RL
+        lam: `(float)`
+            lambda value when computing Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length)
+        Returns: `(torch.Tensor)`
+            shape: (bs, response_length)
+
+    """
+    expanded_rw = token_level_rewards.max(dim=-1, keepdim=True).values * response_mask
+    expanded_rw = (2*expanded_rw)-1
+    baseline = expanded_rw.mean() * response_mask
+    expanded_rw = expanded_rw - baseline
     return expanded_rw, expanded_rw.detach().clone()
 
 
@@ -976,22 +1016,26 @@ def compute_policy_loss_dpo_topr(
     assert not isinstance(config, AlgoConfig)
 
     negative_approx_kl = log_prob - old_log_prob
-    ratio = torch.exp(negative_approx_kl)
-    prob = torch.exp(log_prob)
-    old_prob = torch.exp(old_log_prob)
+    inverse_negative_approx_kl = -negative_approx_kl
 
-    positive_loss = torch.log(prob/(prob + old_prob))
-    negative_loss = torch.log(old_prob/(prob + old_prob))
+    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
+    inverse_negative_approx_kl = torch.clamp(inverse_negative_approx_kl, min=-20.0, max=20.0)
+
+    ratio = torch.exp(negative_approx_kl)
+    inverted_ratio = torch.exp(inverse_negative_approx_kl)
+    # prob = torch.exp(log_prob)
+    # old_prob = torch.exp(old_log_prob)
+
+    # # eps = 1e-8
+    positive_loss = -torch.log(1 + inverted_ratio)
+    negative_loss = -torch.log(1 + ratio) * 5
 
     positive_mask = (advantages > 0).float()
     negative_mask = (advantages <= 0).float()
     pg_losses = -positive_loss * positive_mask - negative_loss * negative_mask
-
+    # pg_losses = -negative_loss
     pg_losses = pg_losses * advantages.abs()
 
-    # Clamp negative_approx_kl for stability
-    ratio = torch.exp(negative_approx_kl)
-    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
 
     pg_clipfrac = verl_F.masked_mean(ratio, positive_mask*response_mask)

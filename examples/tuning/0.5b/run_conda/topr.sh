@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --gpus-per-task=a100l:1
 #SBATCH --cpus-per-task=8
-#SBATCH --job-name=gsm_vrl
+#SBATCH --job-name=topr
 #SBATCH --output=job_output2.txt
 #SBATCH --error=job_error2.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=4:30:00
+#SBATCH --time=8:30:00
 
 module load anaconda
 conda activate verlhf
@@ -20,7 +20,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=dpo-topr-4epoch-4096-no-kl-batch-32-no-adv-after-firstm-001lr-0.5b-${NOW}
+export WANDB_EXP=topr-4epoch-2048-fake-entropy-log-out-005lr-0.5b-${NOW}
 MODEL_PATH=/home/mila/a/arnaud.bergeron1/scratch/verl/models/qwen_0.5B
 
 set -x
@@ -32,12 +32,13 @@ mini_batch_size=$(( total_procs ))
 unset ROCR_VISIBLE_DEVICES
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
+
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=no_estimator \
-    actor_rollout_ref.actor.policy_loss.loss_mode=dpo_topr \
-    data.train_files=$HOME/data/gsm8k/train.parquet \
-    data.val_files=$HOME/data/gsm8k/test.parquet \
-    data.train_batch_size=4096 \
+    actor_rollout_ref.actor.policy_loss.loss_mode=topr \
+    data.train_files=/home/data/gsm8k/train.parquet \
+    data.val_files=/home/data/gsm8k/test.parquet \
+    data.train_batch_size=2048 \
     data.val_batch_size=${total_procs} \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
@@ -55,12 +56,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_mini_batch_size=${mini_batch_size} \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${mini_batch_size} \
     actor_rollout_ref.actor.use_kl_loss=False \
-    actor_rollout_ref.actor.kl_loss_coef=0.0 \
+    actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.fsdp_config.param_offload=True \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
+    actor_rollout_ref.actor.fsdp_config.param_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=${mini_batch_size} \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
@@ -68,14 +69,15 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.n=5 \
     actor_rollout_ref.rollout.max_num_seqs=512 \
     actor_rollout_ref.rollout.max_model_len=1536 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=1536 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.layered_summon=True \
     actor_rollout_ref.ref.log_prob_micro_batch_size=${mini_batch_size} \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.ref.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
-    actor_rollout_ref.actor.entropy_coeff=0.0\
-    algorithm.kl_ctrl.kl_coef=0.0 \
+    actor_rollout_ref.actor.entropy_coeff=0.0 \
+    algorithm.kl_ctrl.kl_coef=0.001 \
     algorithm.use_kl_in_reward=False \
     trainer.val_before_train=False \
     trainer.critic_warmup=0 \
@@ -86,4 +88,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=1 \
-    trainer.total_epochs=6 $@ 
+    trainer.total_epochs=4 $@ 

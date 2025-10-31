@@ -520,6 +520,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 weight_decay=optim_config.get("weight_decay", 1e-2),
             )
 
+            # actor_optimizer = optim.SGD(
+            #     actor_module_fsdp.parameters(),
+            #     lr=optim_config.lr,
+            # )
+
             total_steps = optim_config.get("total_training_steps", 0)
             num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
             warmup_style = optim_config.get("warmup_style", "constant")

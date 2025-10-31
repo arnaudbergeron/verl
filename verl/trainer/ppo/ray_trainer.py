@@ -1234,7 +1234,10 @@ class RayPPOTrainer:
                     _actor_metric_current = {}
                     for actor_key, actor_value in actor_output_metrics.items():
                         if isinstance(actor_value, list):
-                            _actor_metric_current[actor_key] = actor_value[metrics_idx]
+                            try:
+                                _actor_metric_current[actor_key] = actor_value[metrics_idx]
+                            except IndexError:
+                                _actor_metric_current[actor_key] = 0
                         else:
                             _actor_metric_current[actor_key] = actor_value
 

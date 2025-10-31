@@ -19,6 +19,7 @@ Single Process Actor
 
 import logging
 import os
+import re
 
 import torch
 from torch import nn
@@ -277,7 +278,7 @@ class DataParallelPPOActor(BasePPOActor):
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
 
-            return entropy, log_probs
+            return entropy, log_probs, logits_rmpad
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -340,7 +341,7 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs = self._forward_micro_batch(
+                entropy, log_probs, logits = self._forward_micro_batch(
                     model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
                 )
             log_probs_lst.append(log_probs)
@@ -374,6 +375,7 @@ class DataParallelPPOActor(BasePPOActor):
             "position_ids",
             "old_log_probs",
             "advantages",
+            "token_level_rewards",
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
@@ -395,6 +397,8 @@ class DataParallelPPOActor(BasePPOActor):
         mini_batches = data.split(self.config.ppo_mini_batch_size)
 
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
+
+        compute_extra_grad_stats = self.config.get("compute_extra_grad_stats", False)
 
         metrics = {}
         for _ in range(self.config.ppo_epochs):
@@ -428,10 +432,10 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_scale_factor = 1 / self.gradient_accumulation
 
                     # all return: (bsz, response_length)
-                    calculate_entropy = False
+                    calculate_entropy = compute_extra_grad_stats
                     if entropy_coeff != 0:
                         calculate_entropy = True
-                    entropy, log_prob = self._forward_micro_batch(
+                    entropy, log_prob, logits = self._forward_micro_batch(
                         model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
                     )
 
@@ -473,6 +477,47 @@ class DataParallelPPOActor(BasePPOActor):
                     micro_batch_metrics["actor/theoretical_gradient_positive"] = theoretical_gradient_positive.detach().item()
                     micro_batch_metrics["actor/theoretical_gradient_negative"] = theoretical_gradient_negative.detach().item()
 
+
+                    reward = model_inputs["token_level_rewards"]
+                    importance_ratio = prob / old_prob
+                    expected_reward = verl_F.masked_mean(importance_ratio * reward, response_mask)
+                    micro_batch_metrics["actor/expected_reward"] = expected_reward.detach().item()
+
+                    #compute loss grad wrt logits
+                    if compute_extra_grad_stats:
+                        dpo_topr_positive = verl_F.masked_mean(-torch.log(1+(old_prob/prob)), positive_mask*response_mask)
+                        dpo_topr_negative = verl_F.masked_mean(-torch.log(1+(prob/old_prob)), negative_mask*response_mask)
+                        with torch.no_grad():
+                            logits_grad = torch.autograd.grad(
+                                outputs=pg_loss,
+                                inputs=logits,
+                                retain_graph=True,
+                                create_graph=False,
+                            )[0]  # (nnz, vocab_size)
+                            micro_batch_metrics["actor/logits_grad_norm"] = logits_grad.norm(p=2).detach().item()
+                            micro_batch_metrics["actor/logits_grad_mean"] = logits_grad.abs().mean().detach().item()
+                            micro_batch_metrics["actor/logits_grad_max"] = logits_grad.abs().max().detach().item()
+                            micro_batch_metrics["actor/logits_mean"] = logits.mean().detach().item()
+                            micro_batch_metrics["actor/logits_max"] = logits.max().detach().item()
+                            micro_batch_metrics["actor/logits_min"] = logits.min().detach().item()
+                            micro_batch_metrics["actor/logits_abs_min"] = logits.abs().min().detach().item()
+
+                            dpo_topr_positive_logits_grad = torch.autograd.grad(
+                                outputs=dpo_topr_positive,
+                                inputs=logits,
+                                retain_graph=True,
+                                create_graph=False,
+                            )[0]  # (nnz, vocab_size)
+                            micro_batch_metrics["actor/dpo_topr_positive_logits_grad_norm"] = dpo_topr_positive_logits_grad.norm(p=2).detach().item()
+
+                            dpo_topr_negative_logits_grad = torch.autograd.grad(
+                                outputs=dpo_topr_negative,
+                                inputs=logits,
+                                retain_graph=True,
+                                create_graph=False,
+                            )[0]  # (nnz, vocab_size)
+                            micro_batch_metrics["actor/dpo_topr_negative_logits_grad_norm"] = dpo_topr_negative_logits_grad.norm(p=2).detach().item()
+
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
@@ -498,6 +543,7 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * loss_scale_factor
                     else:
                         loss = policy_loss * loss_scale_factor
+
                     loss.backward()
 
                     mean_pi_prob = torch.exp(log_prob).masked_select(response_mask.bool()).mean()
@@ -522,8 +568,86 @@ class DataParallelPPOActor(BasePPOActor):
                     )
                     append_to_dict(metrics, micro_batch_metrics)
 
-                grad_norm = self._optimizer_step()
-                mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
-                append_to_dict(metrics, mini_batch_metrics)
+                # plot grad norms of each layer and optimizer moments
+                if compute_extra_grad_stats:
+                    layer_grad_norms = {}
+                    layer_number_grad_norms = {}
+                    optimizer_moments = {}
+                    
+                    for name, param in self.actor_module.named_parameters():
+                        if param.grad is not None:
+                            grad_norm = param.grad.norm(p=2).detach().item()
+                            # layer_grad_norms[f"actor/grad_norm/{name}"] = grad_norm
+                            
+                            # Extract layer number if present in the name
+                            layer_match = re.search(r'layers?\.(\d+)', name)
+                            if layer_match:
+                                layer_num = int(layer_match.group(1))
+                                if layer_num not in layer_number_grad_norms:
+                                    layer_number_grad_norms[layer_num] = []
+                                layer_number_grad_norms[layer_num].append(grad_norm)
+                    
+                    # Compute average grad norm per layer
+                    for layer_num, norms in layer_number_grad_norms.items():
+                        avg_norm = sum(norms) / len(norms)
+                        layer_grad_norms[f"grad_norm_by_layer/layer_{layer_num}"] = avg_norm
+
+                    append_to_dict(metrics, layer_grad_norms)
+
+                    # Track optimizer moments with layer-wise aggregation
+                    if torch.distributed.get_rank() == 0:
+                        logger.info(f"Optimizer type: {type(self.actor_optimizer)}")
+                    
+                    # Dictionaries to store moments by layer
+                    layer_moment1_norms = {}  # layer -> list of moment1 norms
+                    layer_moment2_norms = {}  # layer -> list of moment2 norms
+                    
+                    import re
+                    
+                    for name, param in self.actor_module.named_parameters():
+                        if param.grad is None:
+                            continue
+                            
+                        state = self.actor_optimizer.state.get(param, {})
+                        if not state:
+                            continue
+                            
+                        # Extract layer number if present
+                        layer_match = re.search(r'layers?\.(\d+)', name)
+                        if not layer_match:
+                            continue
+                            
+                        layer_num = int(layer_match.group(1))
+                        
+                        # Initialize lists for this layer if needed
+                        if layer_num not in layer_moment1_norms:
+                            layer_moment1_norms[layer_num] = []
+                            layer_moment2_norms[layer_num] = []
+                        
+                        # First moment (mean)
+                        if 'exp_avg' in state:
+                            exp_avg_norm = state['exp_avg'].norm(p=2).detach().item()
+                            layer_moment1_norms[layer_num].append(exp_avg_norm)
+                            
+                        # Second moment (variance)
+                        if 'exp_avg_sq' in state:
+                            exp_avg_sq_norm = state['exp_avg_sq'].norm(p=2).detach().item()
+                            layer_moment2_norms[layer_num].append(exp_avg_sq_norm)
+                    
+                    # Compute average moments per layer
+                    for layer_num in sorted(layer_moment1_norms.keys()):
+                        if layer_moment1_norms[layer_num]:
+                            avg_moment1 = sum(layer_moment1_norms[layer_num]) / len(layer_moment1_norms[layer_num])
+                            optimizer_moments[f"optimizer/moment1_norm_layer_{layer_num}"] = avg_moment1
+                            
+                        if layer_moment2_norms[layer_num]:
+                            avg_moment2 = sum(layer_moment2_norms[layer_num]) / len(layer_moment2_norms[layer_num])
+                            optimizer_moments[f"optimizer/moment2_norm_layer_{layer_num}"] = avg_moment2
+
+                    append_to_dict(metrics, optimizer_moments)
+                    grad_norm = self._optimizer_step()
+
+                    mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
+                    append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
         return metrics
