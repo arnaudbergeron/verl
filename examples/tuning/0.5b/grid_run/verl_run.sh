@@ -21,7 +21,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=${adv_estimation}-${loss_name}-2epoch-${outer_loop_size}-lr-1e-6
+export WANDB_EXP=${adv_estimation}-${loss_name}-2epoch-${outer_loop_size}-lr-1e-6-grid-search
 MODEL_PATH=/home/mila/a/arnaud.bergeron1/scratch/verl/models/qwen_0.5B
 
 set -x
