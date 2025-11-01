@@ -51,7 +51,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.model.lora_rank=32 \
         actor_rollout_ref.model.lora_alpha=32 \
         actor_rollout_ref.model.target_modules=all-linear \
-        actor_rollout_ref.actor.optim.lr=1e-6 \
+        actor_rollout_ref.actor.optim.lr=5e-6 \
         actor_rollout_ref.actor.optim.weight_decay=0.1 \
         actor_rollout_ref.actor.use_torch_compile=True \
         actor_rollout_ref.model.use_remove_padding=True \
