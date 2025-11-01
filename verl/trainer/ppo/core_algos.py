@@ -1018,22 +1018,20 @@ def compute_policy_loss_dpo_topr(
     negative_approx_kl = log_prob - old_log_prob
     inverse_negative_approx_kl = -negative_approx_kl
 
-    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
-    inverse_negative_approx_kl = torch.clamp(inverse_negative_approx_kl, min=-20.0, max=20.0)
+    # negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
+    # inverse_negative_approx_kl = torch.clamp(inverse_negative_approx_kl, min=-20.0, max=20.0)
 
     ratio = torch.exp(negative_approx_kl)
     inverted_ratio = torch.exp(inverse_negative_approx_kl)
     # prob = torch.exp(log_prob)
     # old_prob = torch.exp(old_log_prob)
 
-    # # eps = 1e-8
     positive_loss = -torch.log(1 + inverted_ratio)
-    negative_loss = -torch.log(1 + ratio) * 5
+    negative_loss = -torch.log(1 + ratio)
 
     positive_mask = (advantages > 0).float()
     negative_mask = (advantages <= 0).float()
     pg_losses = -positive_loss * positive_mask - negative_loss * negative_mask
-    # pg_losses = -negative_loss
     pg_losses = pg_losses * advantages.abs()
 
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
