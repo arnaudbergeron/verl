@@ -645,9 +645,10 @@ class DataParallelPPOActor(BasePPOActor):
                             optimizer_moments[f"optimizer/moment2_norm_layer_{layer_num}"] = avg_moment2
 
                     append_to_dict(metrics, optimizer_moments)
-                    grad_norm = self._optimizer_step()
+                    
+                grad_norm = self._optimizer_step()
 
-                    mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
-                    append_to_dict(metrics, mini_batch_metrics)
+                mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
+                append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
         return metrics
