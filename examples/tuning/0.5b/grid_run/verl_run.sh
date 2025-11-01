@@ -5,7 +5,7 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=6:30:00
+#SBATCH --time=06:30:00
 
 adv_estimation=$1
 outer_loop_size=$2
@@ -13,7 +13,6 @@ loss_name=$3
 module load anaconda
 conda activate verlhf
 module load cuda/12.4.0
-
 
 source /home/mila/a/arnaud.bergeron1/scratch/verl/.env
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
@@ -90,4 +89,4 @@ python3 -m verl.trainer.main_ppo \
         trainer.nnodes=1 \
         trainer.save_freq=20 \
         trainer.test_freq=1 \
-        trainer.total_epochs=2 $@ 
+        trainer.total_epochs=2
