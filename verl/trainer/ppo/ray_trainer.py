@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Optional
 
+import wandb
 import numpy as np
 import ray
 import torch
@@ -1233,13 +1234,16 @@ class RayPPOTrainer:
                 for metrics_idx in range(len_actor_output_metrics):
                     _actor_metric_current = {}
                     for actor_key, actor_value in actor_output_metrics.items():
-                        if isinstance(actor_value, list):
-                            try:
-                                _actor_metric_current[actor_key] = actor_value[metrics_idx]
-                            except IndexError:
-                                _actor_metric_current[actor_key] = 0
+                        if "hist" in actor_key:
+                            _actor_metric_current[actor_key] = wandb.Histogram(actor_value[metrics_idx])
                         else:
-                            _actor_metric_current[actor_key] = actor_value
+                            if isinstance(actor_value, list):
+                                try:
+                                    _actor_metric_current[actor_key] = actor_value[metrics_idx]
+                                except IndexError:
+                                    _actor_metric_current[actor_key] = 0
+                            else:
+                                _actor_metric_current[actor_key] = actor_value
 
                     # _metrics.update(_actor_metric_current)
                     logger.log(data=_actor_metric_current, step=_step_log)

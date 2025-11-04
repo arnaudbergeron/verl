@@ -459,30 +459,65 @@ class DataParallelPPOActor(BasePPOActor):
                         rollout_log_probs=rollout_log_probs,
                     )
 
-                    positive_mask = (advantages > 0).float() * response_mask
-                    negative_mask = (advantages <= 0).float() * response_mask
-                    ratio = torch.exp(log_prob - old_log_prob)
-                    ratio_positive = verl_F.masked_mean(ratio, positive_mask)
-                    ratio_negative = verl_F.masked_mean(ratio, negative_mask)
-                    micro_batch_metrics["actor/ratio_positive"] = ratio_positive.detach().item()
-                    micro_batch_metrics["actor/ratio_negative"] = ratio_negative.detach().item()
+                    with torch.no_grad():
+                        positive_mask = (advantages > 0).float() * response_mask
+                        negative_mask = (advantages <= 0).float() * response_mask
+                        ratio = torch.exp(log_prob - old_log_prob)
+                        ratio_positive = verl_F.masked_mean(ratio, positive_mask)
+                        ratio_negative = verl_F.masked_mean(ratio, negative_mask)
+                        micro_batch_metrics["actor/ratio_positive"] = ratio_positive.detach().item()
+                        micro_batch_metrics["actor/ratio_negative"] = ratio_negative.detach().item()
 
-                    prob = torch.exp(log_prob)
-                    old_prob = torch.exp(old_log_prob)
-                    dpo_topr_gradient_negative = prob*(1-prob)/(prob + old_prob)
-                    dpo_topr_gradient_positive = old_prob*prob*(1-prob)/((prob**2) + (prob*old_prob))
+                        prob = torch.exp(log_prob)
+                        old_prob = torch.exp(old_log_prob)
+                        dpo_topr_gradient_negative = prob*(1-prob)/(prob + old_prob)
+                        dpo_topr_gradient_positive = old_prob*prob*(1-prob)/((prob**2) + (prob*old_prob))
 
-                    theoretical_gradient_positive = verl_F.masked_mean(dpo_topr_gradient_positive, positive_mask*response_mask)
-                    theoretical_gradient_negative = verl_F.masked_mean(dpo_topr_gradient_negative, negative_mask*response_mask)
-                    micro_batch_metrics["actor/theoretical_gradient_positive"] = theoretical_gradient_positive.detach().item()
-                    micro_batch_metrics["actor/theoretical_gradient_negative"] = theoretical_gradient_negative.detach().item()
+                        theoretical_gradient_positive = verl_F.masked_mean(dpo_topr_gradient_positive, positive_mask*response_mask)
+                        theoretical_gradient_negative = verl_F.masked_mean(dpo_topr_gradient_negative, negative_mask*response_mask)
+                        micro_batch_metrics["actor/theoretical_gradient_positive"] = theoretical_gradient_positive.detach().item()
+                        micro_batch_metrics["actor/theoretical_gradient_negative"] = theoretical_gradient_negative.detach().item()
 
 
-                    reward = model_inputs["token_level_rewards"]
-                    importance_ratio = prob / old_prob
-                    expected_reward = verl_F.masked_mean(importance_ratio * reward, response_mask)
-                    micro_batch_metrics["actor/expected_reward"] = expected_reward.detach().item()
+                        reward = model_inputs["token_level_rewards"]
+                        importance_ratio = prob / old_prob
+                        expected_reward = verl_F.masked_mean(importance_ratio * reward, response_mask)
+                        micro_batch_metrics["actor/expected_reward"] = expected_reward.detach().item()
 
+                        token_level_ratio = torch.exp(log_prob - old_log_prob)
+                        positive_token_level_ratio = token_level_ratio.masked_select(positive_mask.bool())
+                        negative_token_level_ratio = token_level_ratio.masked_select(negative_mask.bool())
+
+                        sequence_level_ratio = torch.exp(torch.sum(log_prob - old_log_prob, dim=1))
+
+                        # select positive/negative ratios
+                        sequence_level_positive_mask = (torch.sum(advantages, dim=1) > 0)
+                        sequence_level_negative_mask = (torch.sum(advantages, dim=1) <= 0)
+                        postive_sequence_level_ratio = sequence_level_ratio.masked_select(
+                            sequence_level_positive_mask
+                        )
+                        negative_sequence_level_ratio = sequence_level_ratio.masked_select(
+                            sequence_level_negative_mask
+                        )
+                        
+                        micro_batch_metrics["actor/positive_token_lvl_ratio_hist"] = positive_token_level_ratio.detach().cpu().tolist()
+                        micro_batch_metrics["actor/negative_token_lvl_ratio_hist"] = negative_token_level_ratio.detach().cpu().tolist()
+                        micro_batch_metrics["actor/positive_sequence_lvl_ratio_hist"] = postive_sequence_level_ratio.detach().cpu().tolist()
+                        micro_batch_metrics["actor/negative_sequence_lvl_ratio_hist"] = negative_sequence_level_ratio.detach().cpu().tolist()
+
+                        token_level_ratio_greater_than_1 = (token_level_ratio >= 1).float()
+                        token_level_ratio_less_than_1 = (token_level_ratio <= 1).float()
+                        sequence_level_ratio_greater_than_1 = (sequence_level_ratio >= 1).float()
+                        sequence_level_ratio_less_than_1 = (sequence_level_ratio <= 1).float()
+                        micro_batch_metrics["actor/percentage_of_positive_token_lvl_ratio>=1"] = verl_F.masked_mean(token_level_ratio_greater_than_1, positive_mask).detach().item()
+                        micro_batch_metrics["actor/percentage_of_negative_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio_less_than_1, negative_mask).detach().item()
+                        micro_batch_metrics["actor/percentage_of_positive_sequence_lvl_ratio>=1"] = verl_F.masked_mean(sequence_level_ratio_greater_than_1, sequence_level_positive_mask.float()).detach().item()
+                        micro_batch_metrics["actor/percentage_of_negative_sequence_lvl_ratio<=1"] = verl_F.masked_mean(sequence_level_ratio_less_than_1, sequence_level_negative_mask.float()).detach().item()
+
+                        micro_batch_metrics["actor/mean_positive_token_lvl_ratio>=1"] = verl_F.masked_mean(token_level_ratio, positive_mask*token_level_ratio_greater_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_positive_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio, positive_mask*token_level_ratio_less_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_negative_token_lvl_ratio>=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_greater_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_negative_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_less_than_1).detach().item()
                     #compute loss grad wrt logits
                     if compute_extra_grad_stats:
                         dpo_topr_positive = verl_F.masked_mean(-torch.log(1+(old_prob/prob)), positive_mask*response_mask)
