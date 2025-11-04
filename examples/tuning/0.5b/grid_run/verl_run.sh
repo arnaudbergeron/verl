@@ -31,7 +31,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv-est=${adv_estimation}-loss=${loss_name}-outer-loops=${outer_loop_size}-4epoch-lr=5e-6-Qwen-reward-grid-search
+export WANDB_EXP=adv-est-${adv_estimation}-loss-${loss_name}-outer-loops-${outer_loop_size}-4epoch-lr-5e-6-Qwen-reward-grid-search
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
@@ -89,7 +89,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.ref.log_prob_micro_batch_size=${mini_batch_size} \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
         actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
-        actor_rollout_ref.actor.entropy_coeff=0.00\
+        actor_rollout_ref.actor.entropy_coeff=0.00 \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.use_kl_in_reward=False \
         trainer.val_before_train=False \
