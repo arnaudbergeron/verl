@@ -1,8 +1,8 @@
 #!/bin/bash
 
 adv_estimation=(grpo)
-outer_loop_size=(1024 2048 4096)
-loss_name=(dpo_topr topr grpo)
+outer_loop_size=(934 1868 3736)
+loss_name=(dpo_topr topr vanilla)
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 

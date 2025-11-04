@@ -28,7 +28,13 @@ def extract_solution(solution_str, method="strict"):
 
     if method == "strict":
         # this also tests the formatting of the model
-        solutions = re.findall("#### (\\-?[0-9\\.\\,]+)", solution_str)
+        # solutions = re.findall("#### (\\-?[0-9\\.\\,]+)", solution_str)
+        _PAT_LAST_DIGIT = re.compile(
+        r"([+-])?(?=([0-9]|\.[0-9]))(0|([1-9](\d{0,2}(,\d{3})*)|\d*))?(\.\d*)?(?=\D|$)"
+        )
+
+        solutions = list(_PAT_LAST_DIGIT.finditer(solution_str))
+        solutions = [m.group() for m in solutions]
         if len(solutions) == 0:
             final_answer = None
         else:

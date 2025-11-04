@@ -5,25 +5,36 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=06:30:00
+#SBATCH --time=09:30:00
 
+# Input arguments
 adv_estimation=$1
 outer_loop_size=$2
 loss_name=$3
-module load anaconda
-conda activate verlhf
-module load cuda/12.4.0
+test_freq=$((3736 / outer_loop_size))
 
-source /home/mila/a/arnaud.bergeron1/scratch/verl/.env
+# Load modules and activate conda environment
+module load anaconda
+
+set -a
+source "${SCRATCH}/verl/.env"
+set +a
+
+env_name="${CONDA_ENV_NAME}"
+conda activate "${env_name}"
+
+module load cuda/12.4.0
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
+# Run Logging Config
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=${adv_estimation}-${loss_name}-2epoch-${outer_loop_size}-lr-1e-6-grid-search
-MODEL_PATH=/home/mila/a/arnaud.bergeron1/scratch/verl/models/qwen_0.5B
+export WANDB_EXP=adv-est=${adv_estimation}-loss=${loss_name}-outer-loops=${outer_loop_size}-4epoch-lr=5e-6-Qwen-reward-grid-search
+MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
+# Main Training Loop
 set -x
 nproc_per_gpu=32
 nnodes=1
@@ -36,8 +47,8 @@ export VLLM_ATTENTION_BACKEND=XFORMERS
 python3 -m verl.trainer.main_ppo \
         algorithm.adv_estimator=${adv_estimation} \
         actor_rollout_ref.actor.policy_loss.loss_mode=${loss_name} \
-        data.train_files=/home/mila/a/arnaud.bergeron1/scratch/verl/data/gsm8k/train.parquet \
-        data.val_files=/home/mila/a/arnaud.bergeron1/scratch/verl/data/gsm8k/test.parquet \
+        data.train_files=${SCRATCH}/verl/data/gsm8k/train.parquet \
+        data.val_files=${SCRATCH}/verl/data/gsm8k/test.parquet \
         data.train_batch_size=${outer_loop_size} \
         data.val_batch_size=${total_procs} \
         data.max_prompt_length=512 \
@@ -69,6 +80,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
         actor_rollout_ref.rollout.n=5 \
+        actor_rollout_ref.rollout.val_kwargs.n=4 \
         actor_rollout_ref.rollout.max_num_seqs=512 \
         actor_rollout_ref.rollout.max_model_len=1536 \
         actor_rollout_ref.rollout.enable_chunked_prefill=False \
@@ -88,5 +100,5 @@ python3 -m verl.trainer.main_ppo \
         trainer.n_gpus_per_node=1 \
         trainer.nnodes=1 \
         trainer.save_freq=1 \
-        trainer.test_freq=1 \
-        trainer.total_epochs=2
+        trainer.test_freq=${test_freq} \
+        trainer.total_epochs=4
