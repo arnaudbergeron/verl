@@ -69,10 +69,18 @@ def compute_score(solution_str, ground_truth, method="strict", format_score=0.0,
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str, method=method)
+    reward = None
+    pred = "nan"
     if answer is None:
-        return 0
+        reward = 0
     else:
+        pred = answer
         if answer == ground_truth:
-            return score
+            reward = score
         else:
-            return format_score
+            reward = format_score
+
+    return {
+            "score": reward,
+            "pred": pred,
+        }
