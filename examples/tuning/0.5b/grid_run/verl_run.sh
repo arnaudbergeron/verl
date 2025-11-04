@@ -81,6 +81,8 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
         actor_rollout_ref.rollout.n=5 \
         actor_rollout_ref.rollout.val_kwargs.n=4 \
+        actor_rollout_ref.rollout.val_kwargs.temperature=0.7 \
+        actor_rollout_ref.rollout.val_kwargs.top_p=0.9 \
         actor_rollout_ref.rollout.max_num_seqs=512 \
         actor_rollout_ref.rollout.max_model_len=1536 \
         actor_rollout_ref.rollout.enable_chunked_prefill=False \
@@ -92,7 +94,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.actor.entropy_coeff=0.00 \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.use_kl_in_reward=False \
-        trainer.val_before_train=False \
+        trainer.val_before_train=True \
         trainer.critic_warmup=0 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=${WANDB_PROJECT} \
