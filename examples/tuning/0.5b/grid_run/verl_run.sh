@@ -5,12 +5,13 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=09:30:00
+#SBATCH --time=4:30:00
 
 # Input arguments
 adv_estimation=$1
 outer_loop_size=$2
 loss_name=$3
+learning_rate=$4
 test_freq=$((3736 / outer_loop_size))
 
 # Load modules and activate conda environment
@@ -31,7 +32,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv-est-${adv_estimation}-loss-${loss_name}-outer-loops-${outer_loop_size}-4epoch-lr-5e-6-Qwen-reward-grid-search
+export WANDB_EXP=adv-est-batch-loss-${loss_name}-outer-loops-${outer_loop_size}-4epoch-lr-${learning_rate}-float16-regularization-measure
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
@@ -62,7 +63,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.model.lora_rank=32 \
         actor_rollout_ref.model.lora_alpha=32 \
         actor_rollout_ref.model.target_modules=all-linear \
-        actor_rollout_ref.actor.optim.lr=5e-6 \
+        actor_rollout_ref.actor.optim.lr=${learning_rate} \
         actor_rollout_ref.actor.optim.weight_decay=0.1 \
         actor_rollout_ref.actor.use_torch_compile=True \
         actor_rollout_ref.model.use_remove_padding=True \
@@ -74,7 +75,9 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-        actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
+        actor_rollout_ref.actor.fsdp_config.model_dtype=float16 \
+        actor_rollout_ref.ref.fsdp_config.model_dtype=float16 \
+        actor_rollout_ref.rollout.dtype=float16 \
         actor_rollout_ref.rollout.log_prob_micro_batch_size=${mini_batch_size} \
         actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
         actor_rollout_ref.rollout.name=vllm \
@@ -83,6 +86,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.rollout.val_kwargs.n=4 \
         actor_rollout_ref.rollout.val_kwargs.temperature=0.7 \
         actor_rollout_ref.rollout.val_kwargs.top_p=0.9 \
+        actor_rollout_ref.rollout.val_kwargs.do_sample=True \
         actor_rollout_ref.rollout.max_num_seqs=512 \
         actor_rollout_ref.rollout.max_model_len=1536 \
         actor_rollout_ref.rollout.enable_chunked_prefill=False \
@@ -94,7 +98,7 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.actor.entropy_coeff=0.00 \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.use_kl_in_reward=False \
-        trainer.val_before_train=True \
+        trainer.val_before_train=False \
         trainer.critic_warmup=0 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=${WANDB_PROJECT} \
