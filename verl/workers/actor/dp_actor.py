@@ -401,6 +401,8 @@ class DataParallelPPOActor(BasePPOActor):
         compute_extra_grad_stats = self.config.get("compute_extra_grad_stats", False)
 
         metrics = {}
+        ref_pos_ratios = []
+        ref_neg_ratios = []
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 if self.config.use_dynamic_bsz:
@@ -480,6 +482,8 @@ class DataParallelPPOActor(BasePPOActor):
 
 
                         reward = model_inputs["token_level_rewards"]
+                        reward = reward.max(dim=-1, keepdim=True).values
+                        
                         importance_ratio = prob / old_prob
                         expected_reward = verl_F.masked_mean(importance_ratio * reward, response_mask)
                         micro_batch_metrics["actor/expected_reward"] = expected_reward.detach().item()
@@ -518,6 +522,10 @@ class DataParallelPPOActor(BasePPOActor):
                         micro_batch_metrics["actor/mean_positive_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio, positive_mask*token_level_ratio_less_than_1).detach().item()
                         micro_batch_metrics["actor/mean_negative_token_lvl_ratio>=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_greater_than_1).detach().item()
                         micro_batch_metrics["actor/mean_negative_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_less_than_1).detach().item()
+
+                        micro_batch_metrics["actor/mean_positive_token_ratio"] = verl_F.masked_mean(token_level_ratio, positive_mask).detach().item()
+                        micro_batch_metrics["actor/mean_negative_token_ratio"] = verl_F.masked_mean(token_level_ratio, negative_mask).detach().item()
+                        
                     #compute loss grad wrt logits
                     if compute_extra_grad_stats:
                         dpo_topr_positive = verl_F.masked_mean(-torch.log(1+(old_prob/prob)), positive_mask*response_mask)
@@ -573,6 +581,19 @@ class DataParallelPPOActor(BasePPOActor):
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
+                        ref_ratio = torch.exp(log_prob - ref_log_prob)
+                        mean_ref_ratio = verl_F.masked_mean(ref_ratio, response_mask)
+                        mean_ref_ratio_positive = verl_F.masked_mean(ref_ratio, positive_mask)
+                        mean_ref_ratio_negative = verl_F.masked_mean(ref_ratio, negative_mask)
+                        masked_positive_ref_ratio = ref_ratio.masked_select(positive_mask.bool())
+                        masked_negative_ref_ratio = ref_ratio.masked_select(negative_mask.bool())
+                        micro_batch_metrics["actor/ref_ratio_positive_hist"] = masked_positive_ref_ratio.detach().cpu().tolist()
+                        micro_batch_metrics["actor/ref_ratio_negative_hist"] = masked_negative_ref_ratio.detach().cpu().tolist()
+
+                        micro_batch_metrics["actor/mean_ref_ratio"] = mean_ref_ratio.detach().item()
+                        micro_batch_metrics["actor/mean_ref_ratio_positive"] = mean_ref_ratio_positive.detach().item()
+                        micro_batch_metrics["actor/mean_ref_ratio_negative"] = mean_ref_ratio_negative.detach().item()
+
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
                         loss = policy_loss * loss_scale_factor
@@ -587,6 +608,20 @@ class DataParallelPPOActor(BasePPOActor):
                     max_pi_prob = torch.exp(log_prob).masked_select(response_mask.bool()).max()
                     min_old_pi_prob = torch.exp(old_log_prob).masked_select(response_mask.bool()).min()
                     max_old_pi_prob = torch.exp(old_log_prob).masked_select(response_mask.bool()).max()
+
+                    # compute relative regularization metrics
+                    with torch.no_grad():
+                        for name, param in self.actor_module.named_parameters():
+                            if param.grad is not None:
+                                param_norm = param.norm(p=2).detach().item()
+                                decay_norm = param_norm * self.config.optim.weight_decay
+                                grad_norm = param.grad.norm(p=2).detach().item()
+                                if grad_norm > 0:
+                                    rel_reg = decay_norm / grad_norm
+                                    key = f"optim/rel_regularization/{name}"
+                                    micro_batch_metrics[key] = rel_reg
+
+                                    
                     micro_batch_metrics.update(
                         {
                             "actor/pg_loss": pg_loss.detach().item() * loss_scale_factor,
@@ -602,6 +637,7 @@ class DataParallelPPOActor(BasePPOActor):
                         }
                     )
                     append_to_dict(metrics, micro_batch_metrics)
+
 
                 # plot grad norms of each layer and optimizer moments
                 if compute_extra_grad_stats:

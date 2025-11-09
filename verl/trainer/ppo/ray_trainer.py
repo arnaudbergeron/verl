@@ -838,6 +838,9 @@ class RayPPOTrainer:
         print(f"Load from checkpoint folder: {global_step_folder}")
         # set global step
         self.global_steps = int(global_step_folder.split("global_step_")[-1])
+        
+        if self.config.trainer.get("one_more_step_after_load", False):
+            self.global_steps -= 1
 
         print(f"Setting global step to {self.global_steps}")
         print(f"Resuming from {global_step_folder}")
@@ -1231,12 +1234,19 @@ class RayPPOTrainer:
                     _step_log = self._step_log
 
                 logger.log(data=metrics, step=_step_log)
+                hist_log_steps = 0
                 for metrics_idx in range(len_actor_output_metrics):
                     _actor_metric_current = {}
                     for actor_key, actor_value in actor_output_metrics.items():
                         if "hist" in actor_key:
-                            _actor_metric_current[actor_key] = wandb.Histogram(actor_value[metrics_idx])
-                        else:
+                            _actor_metric_current[actor_key] = wandb.Histogram(actor_value[metrics_idx], num_bins=512)
+                            if "ref" in actor_key:
+                                hist_vals_to_log = {}
+                                for val in actor_value[metrics_idx]:
+                                    hist_vals_to_log[f"{actor_key}_list"] = val
+                                    logger.log(data=hist_vals_to_log, step=hist_log_steps)
+                                    hist_log_steps += 1
+                                    
                             if isinstance(actor_value, list):
                                 try:
                                     _actor_metric_current[actor_key] = actor_value[metrics_idx]
