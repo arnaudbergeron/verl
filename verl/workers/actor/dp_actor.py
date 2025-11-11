@@ -673,7 +673,6 @@ class DataParallelPPOActor(BasePPOActor):
                     layer_moment1_norms = {}  # layer -> list of moment1 norms
                     layer_moment2_norms = {}  # layer -> list of moment2 norms
                     
-                    import re
                     
                     for name, param in self.actor_module.named_parameters():
                         if param.grad is None:

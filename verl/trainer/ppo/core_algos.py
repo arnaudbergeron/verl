@@ -94,7 +94,7 @@ class AdvantageEstimator(str, Enum):
     """
 
     GAE = "gae"
-    GRPO = "grpo"
+    GRPO = "question"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
     REMAX = "remax"
@@ -103,7 +103,7 @@ class AdvantageEstimator(str, Enum):
     GRPO_PASSK = "grpo_passk"
     GPG = "gpg"
     NO_ESTIMATOR = 'no_estimator'
-    BASELINE = 'baseline'
+    BATCH_BASELINE = 'batch'
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -296,7 +296,7 @@ def compute_no_estimation_advantage_return(
     return expanded_rw, expanded_rw.detach().clone()
 
 
-@register_adv_est(AdvantageEstimator.BASELINE)
+@register_adv_est(AdvantageEstimator.BATCH_BASELINE)
 def compute_no_estimation_advantage_return(
     token_level_rewards: torch.Tensor,
     values: torch.Tensor = None,
@@ -329,8 +329,7 @@ def compute_no_estimation_advantage_return(
 
     """
     expanded_rw = token_level_rewards.max(dim=-1, keepdim=True).values * response_mask
-    expanded_rw = (2*expanded_rw)-1
-    baseline = expanded_rw.mean() * response_mask
+    baseline = verl_F.masked_mean(expanded_rw, response_mask)
     expanded_rw = expanded_rw - baseline
     return expanded_rw, expanded_rw.detach().clone()
 
