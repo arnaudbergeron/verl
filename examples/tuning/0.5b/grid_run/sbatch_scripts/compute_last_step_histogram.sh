@@ -5,7 +5,7 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=4:30:00
+#SBATCH --time=1:30:00
 
 # Input arguments
 adv_estimation=$1
@@ -31,8 +31,9 @@ NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
-export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv-est-batch-loss-${loss_name}-outer-loops-${outer_loop_size}-4epoch-lr-${learning_rate}-float16-regularization-measure
+export WANDB_PROJECT=${WANDB_DIR}-IS
+export EXP_NAME=adv-est-batch-loss-${loss_name}-outer-loops-${outer_loop_size}-4epoch-lr-${learning_rate}-float16
+export WANDB_EXP=${EXP_NAME}
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
@@ -63,13 +64,13 @@ python3 -m verl.trainer.main_ppo \
         actor_rollout_ref.model.lora_rank=32 \
         actor_rollout_ref.model.lora_alpha=32 \
         actor_rollout_ref.model.target_modules=all-linear \
-        actor_rollout_ref.actor.optim.lr=${learning_rate} \
+        actor_rollout_ref.actor.optim.lr=0.0 \
         actor_rollout_ref.actor.optim.weight_decay=0.1 \
         actor_rollout_ref.actor.use_torch_compile=True \
         actor_rollout_ref.model.use_remove_padding=True \
         actor_rollout_ref.actor.ppo_mini_batch_size=${mini_batch_size} \
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${mini_batch_size} \
-        actor_rollout_ref.actor.use_kl_loss=False \
+        actor_rollout_ref.actor.use_kl_loss=True \
         actor_rollout_ref.actor.kl_loss_coef=0.0 \
         actor_rollout_ref.actor.kl_loss_type=low_var_kl \
         actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
@@ -101,10 +102,12 @@ python3 -m verl.trainer.main_ppo \
         trainer.val_before_train=False \
         trainer.critic_warmup=0 \
         trainer.logger='["console","wandb"]' \
-        trainer.project_name=${WANDB_PROJECT} \
-        trainer.experiment_name=${WANDB_EXP} \
+        +trainer.wandb_project=${WANDB_PROJECT} \
+        trainer.project_name=${WANDB_DIR} \
+        trainer.experiment_name=${EXP_NAME} \
         trainer.n_gpus_per_node=1 \
         trainer.nnodes=1 \
         trainer.save_freq=1 \
         trainer.test_freq=${test_freq} \
-        trainer.total_epochs=4
+        trainer.total_epochs=4 \
+        +trainer.one_more_step_after_load=True
