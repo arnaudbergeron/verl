@@ -108,6 +108,6 @@ python3 -m verl.trainer.main_ppo \
         trainer.n_gpus_per_node=1 \
         trainer.rollout_data_dir=checkpoints/${WANDB_PROJECT}/${WANDB_EXP} \
         trainer.nnodes=1 \
-        trainer.save_freq=6 \
+        trainer.save_freq=2 \
         trainer.test_freq=${test_freq} \
         trainer.total_epochs=40
