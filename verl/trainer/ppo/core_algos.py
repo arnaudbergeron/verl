@@ -1153,8 +1153,11 @@ def compute_policy_loss_dpo_topr(
     if prob_granularity == 'sequence':
         agg_log_prob = log_prob.sum(dim=-1, keepdim=True)
         agg_old_log_prob = old_log_prob.sum(dim=-1, keepdim=True)
-        advantages = advantages.max(dim=-1, keepdim=True).values
-        response_mask = response_mask.max(dim=-1, keepdim=True).values
+        advantages = advantages[:,:1]
+        response_mask = response_mask[:,:1]
+        assert (advantages.abs() > 0).all()
+        assert (response_mask > 0).all()
+
     elif prob_granularity == 'cumultative_sequence':
         pi_prefix = torch.cumsum(log_prob, dim=-1) - log_prob
         pi_prefix = pi_prefix.detach()
