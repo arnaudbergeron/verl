@@ -14,6 +14,7 @@ loss_name=$3
 learning_rate=$4
 bsz=$(($5))
 prob_granularity=$6
+loss_agg=$7
 test_freq=$((7472 / outer_loop_size))
 
 # Load modules and activate conda environment
@@ -34,7 +35,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob-${prob_granularity}-max-len-norm-${NOW}
+export WANDB_EXP=adv${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob-${prob_granularity}-${loss_agg}-${NOW}
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
@@ -46,7 +47,7 @@ export VLLM_ATTENTION_BACKEND=XFORMERS
 python3 -m verl.trainer.main_ppo \
         algorithm.adv_estimator=${adv_estimation} \
         actor_rollout_ref.actor.policy_loss.loss_mode=${loss_name} \
-        actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-sum-norm \
+        actor_rollout_ref.actor.loss_agg_mode=${loss_agg} \
         actor_rollout_ref.actor.probability_granularity=${prob_granularity} \
         data.train_files=${SCRATCH}/verl/data/gsm8k/train.parquet \
         data.val_files=${SCRATCH}/verl/data/gsm8k/test.parquet \
