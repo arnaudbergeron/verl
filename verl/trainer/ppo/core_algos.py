@@ -1148,14 +1148,26 @@ def compute_policy_loss_dpo_topr(
 
     assert config is not None
     assert not isinstance(config, AlgoConfig)
-
+    
     prob_granularity = config.get("probability_granularity", "token")
     if prob_granularity == 'sequence':
         agg_log_prob = log_prob.sum(dim=-1, keepdim=True)
         agg_old_log_prob = old_log_prob.sum(dim=-1, keepdim=True)
+        advantages = advantages[:,:1]
+        response_mask = response_mask[:,:1]
+        assert (advantages.abs() > 0).all()
+        assert (response_mask > 0).all()
+
     elif prob_granularity == 'cumultative_sequence':
-        agg_log_prob = log_prob.cumsum(dim=-1) * response_mask
-        agg_old_log_prob = old_log_prob.cumsum(dim=-1) * response_mask
+        pi_prefix = torch.cumsum(log_prob, dim=-1) - log_prob
+        pi_prefix = pi_prefix.detach()
+        agg_log_prob = pi_prefix + log_prob  # stop full gradient flow
+        agg_log_prob = agg_log_prob * response_mask
+
+        mu_prefix = torch.cumsum(old_log_prob, dim=-1) - old_log_prob
+        mu_prefix = mu_prefix.detach()
+        agg_old_log_prob = mu_prefix + old_log_prob  # stop full gradient flow
+        agg_old_log_prob = agg_old_log_prob * response_mask
     elif prob_granularity == 'token':
         agg_log_prob = log_prob
         agg_old_log_prob = old_log_prob
@@ -1167,7 +1179,14 @@ def compute_policy_loss_dpo_topr(
 
     ratio = torch.exp(negative_approx_kl)
     inverted_ratio = torch.exp(inverse_negative_approx_kl)
-    
+    # inverted_weighted_ratio = torch.exp(advantages*inverse_negative_approx_kl)
+
+    # prob = torch.exp(log_prob)
+    # old_prob = torch.exp(old_log_prob)
+
+    # positive_loss = log_prob-(old_prob+1)*torch.log(1 + inverted_ratio)
+    # negative_loss = ratio-torch.log(1 + ratio)
+
     negative_loss = torch.log(1 + ratio)
     positive_loss = torch.log(1 + inverted_ratio)
 

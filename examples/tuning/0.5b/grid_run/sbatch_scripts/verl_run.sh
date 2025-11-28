@@ -5,7 +5,7 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=08:35:00
+#SBATCH --time=00:25:00
 
 # Input arguments
 adv_estimation=$1
@@ -35,7 +35,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob-${prob_granularity}-${loss_agg}-${NOW}
+export WANDB_EXP=adv-${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob-${prob_granularity}-${loss_agg}-${NOW}
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
@@ -108,6 +108,6 @@ python3 -m verl.trainer.main_ppo \
         trainer.n_gpus_per_node=1 \
         trainer.rollout_data_dir=checkpoints/${WANDB_PROJECT}/${WANDB_EXP} \
         trainer.nnodes=1 \
-        trainer.save_freq=20 \
+        trainer.save_freq=2 \
         trainer.test_freq=${test_freq} \
         trainer.total_epochs=40
