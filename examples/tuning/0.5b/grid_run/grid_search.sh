@@ -2,7 +2,7 @@
 
 adv_estimation=(batch)
 # Pairs are of form (batch_size outer_loop_size)
-batch_outer_pairs=("32 934")
+batch_outer_pairs=(“32 934”)
 loss_name=(dpo_topr)
 learning_rate=(1e-5 1e-4 5e-5)
 prob_granularity=(sequence cumultative_sequence token)
