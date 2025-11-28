@@ -443,6 +443,12 @@ def process_validation_metrics(
                 n_resps = len(var_vals)
                 metric[f"mean@{n_resps}"] = np.mean(var_vals)
                 metric[f"pass@{n_resps}"] = np.max(var_vals)
+                metric[f"percentage_pass_non_zero@{n_resps}"] = (np.max(var_vals) > 0).astype(np.float32)
+
+                for _n in range(n_resps+1):
+                    metric[f"{_n}_correct@{n_resps}"] = 0
+                num_good = np.sum(var_vals).astype(np.int16)
+                metric[f"{str(num_good)}_correct@{n_resps}"] = 1
 
                 if n_resps > 1:
                     metric[f"std@{n_resps}"] = np.std(var_vals)

@@ -103,7 +103,9 @@ class AdvantageEstimator(str, Enum):
     GRPO_PASSK = "grpo_passk"
     GPG = "gpg"
     NO_ESTIMATOR = 'no_estimator'
+    NEP = 'nep'
     BATCH_BASELINE = 'batch'
+    NGRPO = 'n_question'
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -397,6 +399,139 @@ def compute_grpo_outcome_advantage(
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
             else:
                 scores[i] = scores[i] - id2mean[index[i]]
+        scores = scores.unsqueeze(-1) * response_mask
+
+    return scores, scores
+
+@register_adv_est(AdvantageEstimator.NGRPO) 
+def compute_ngrpo_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    config: Optional[AlgoConfig] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute advantage for GRPO, operating only on Outcome reward
+    (with only one scalar reward for each response).
+
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape is (bs, response_length)
+        response_mask: `(torch.Tensor)`
+            shape is (bs, response_length)
+        index: `(np.ndarray)`
+            index array for grouping
+        epsilon: `(float)`
+            small value to avoid division by zero
+        norm_adv_by_std_in_grpo: `(bool)`
+            whether to scale the GRPO advantage
+        config: `(Optional[AlgoConfig])`
+            algorithm configuration object
+
+    Note:
+        If norm_adv_by_std_in_grpo is True, the advantage is scaled by the std, as in the original GRPO.
+        If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
+
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape is (bs, response_length)
+        Returns: `(torch.Tensor)`
+            shape is (bs, response_length)
+    """
+    scores = token_level_rewards.sum(dim=-1)
+
+    id2score = defaultdict(list)
+    id2mean = {}
+    id2std = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2score[index[i]].append(scores[i])
+        for idx in id2score:
+            if len(id2score[idx]) == 1:
+                id2mean[idx] = torch.tensor(0.0)
+                id2std[idx] = torch.tensor(1.0)
+            elif len(id2score[idx]) > 1:
+                score_tensor_list = id2score[idx]
+                score_tensor_list.append(torch.tensor(1.0))
+                scores_tensor = torch.stack(score_tensor_list)
+                id2mean[idx] = torch.mean(scores_tensor)
+                id2std[idx] = torch.std(scores_tensor)
+            else:
+                raise ValueError(f"no score in prompt index: {idx}")
+        for i in range(bsz):
+            if norm_adv_by_std_in_grpo:
+                scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
+            else:
+                scores[i] = scores[i] - id2mean[index[i]]
+        scores = scores.unsqueeze(-1) * response_mask
+
+    return scores, scores
+
+@register_adv_est(AdvantageEstimator.NEP)
+def compute_nep_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    config: Optional[AlgoConfig] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    No estimator weighted
+    (with only one scalar reward for each response).
+
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape is (bs, response_length)
+        response_mask: `(torch.Tensor)`
+            shape is (bs, response_length)
+        index: `(np.ndarray)`
+            index array for grouping
+        epsilon: `(float)`
+            small value to avoid division by zero
+        norm_adv_by_std_in_grpo: `(bool)`
+            whether to scale the GRPO advantage
+        config: `(Optional[AlgoConfig])`
+            algorithm configuration object
+
+    Note:
+        If norm_adv_by_std_in_grpo is True, the advantage is scaled by the std, as in the original GRPO.
+        If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
+
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape is (bs, response_length)
+        Returns: `(torch.Tensor)`
+            shape is (bs, response_length)
+    """
+    scores = (token_level_rewards.sum(dim=-1)*2) - 1
+
+    id2score = defaultdict(list)
+    id2mean = {}
+    id2std = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2score[index[i]].append(scores[i])
+        for idx in id2score:
+            if len(id2score[idx]) == 1:
+                id2mean[idx] = torch.tensor(0.0)
+                id2std[idx] = torch.tensor(1.0)
+            elif len(id2score[idx]) > 1:
+                scores_tensor = torch.stack(id2score[idx])
+                id2mean[idx] = torch.mean(scores_tensor)
+                id2std[idx] = torch.std(scores_tensor)
+            else:
+                raise ValueError(f"no score in prompt index: {idx}")
+        for i in range(bsz):
+            if (id2mean[index[i]] == -1).any() or (id2mean[index[i]] == 1).any():
+                scores[i] = 0
+
         scores = scores.unsqueeze(-1) * response_mask
 
     return scores, scores
@@ -1014,23 +1149,31 @@ def compute_policy_loss_dpo_topr(
     assert config is not None
     assert not isinstance(config, AlgoConfig)
 
-    negative_approx_kl = log_prob - old_log_prob
-    inverse_negative_approx_kl = -negative_approx_kl
+    prob_granularity = config.get("probability_granularity", "token")
+    if prob_granularity == 'sequence':
+        agg_log_prob = log_prob.sum(dim=-1, keepdim=True)
+        agg_old_log_prob = old_log_prob.sum(dim=-1, keepdim=True)
+    elif prob_granularity == 'cumultative_sequence':
+        agg_log_prob = log_prob.cumsum(dim=-1) * response_mask
+        agg_old_log_prob = old_log_prob.cumsum(dim=-1) * response_mask
+    elif prob_granularity == 'token':
+        agg_log_prob = log_prob
+        agg_old_log_prob = old_log_prob
+    else:
+        raise NotImplementedError
 
-    # negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
-    # inverse_negative_approx_kl = torch.clamp(inverse_negative_approx_kl, min=-20.0, max=20.0)
+    negative_approx_kl = agg_log_prob - agg_old_log_prob
+    inverse_negative_approx_kl = -negative_approx_kl
 
     ratio = torch.exp(negative_approx_kl)
     inverted_ratio = torch.exp(inverse_negative_approx_kl)
-    # prob = torch.exp(log_prob)
-    # old_prob = torch.exp(old_log_prob)
-
-    positive_loss = -torch.log(1 + inverted_ratio)
-    negative_loss = -torch.log(1 + ratio)
+    
+    negative_loss = torch.log(1 + ratio)
+    positive_loss = torch.log(1 + inverted_ratio)
 
     positive_mask = (advantages > 0).float()
     negative_mask = (advantages <= 0).float()
-    pg_losses = -positive_loss * positive_mask - negative_loss * negative_mask
+    pg_losses = positive_loss * positive_mask + negative_loss * negative_mask
     pg_losses = pg_losses * advantages.abs()
 
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
