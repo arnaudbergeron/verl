@@ -5,7 +5,7 @@
 #SBATCH --error=job_error.txt
 #SBATCH --ntasks=1
 #SBATCH --mem=256Gb
-#SBATCH --time=00:25:00
+#SBATCH --time=08:30:00
 
 # Input arguments
 adv_estimation=$1
