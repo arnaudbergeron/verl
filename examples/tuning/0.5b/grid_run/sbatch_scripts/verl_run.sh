@@ -34,7 +34,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 NOW=$(date +%Y%m%d)
 export WANDB_DIR=gsm8k-grpo-lora-qwen2.5-0.5b
 export WANDB_PROJECT=${WANDB_DIR}
-export WANDB_EXP=adv${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob${prob_granularity}-max-len-norm-${NOW}
+export WANDB_EXP=adv${adv_estimation}-${loss_name}-o${outer_loop_size}-lr${learning_rate}-bsz${bsz}-prob-${prob_granularity}-max-len-norm-${NOW}
 MODEL_PATH=${SCRATCH}/verl/models/qwen_0.5B
 
 # Main Training Loop
