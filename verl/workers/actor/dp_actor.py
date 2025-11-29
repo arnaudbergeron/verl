@@ -399,10 +399,7 @@ class DataParallelPPOActor(BasePPOActor):
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
 
         compute_extra_grad_stats = self.config.get("compute_extra_grad_stats", False)
-
         metrics = {}
-        ref_pos_ratios = []
-        ref_neg_ratios = []
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 if self.config.use_dynamic_bsz:
@@ -523,8 +520,18 @@ class DataParallelPPOActor(BasePPOActor):
                         micro_batch_metrics["actor/mean_negative_token_lvl_ratio>=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_greater_than_1).detach().item()
                         micro_batch_metrics["actor/mean_negative_token_lvl_ratio<=1"] = verl_F.masked_mean(token_level_ratio, negative_mask*token_level_ratio_less_than_1).detach().item()
 
+                        micro_batch_metrics["actor/mean_positive_sequence_lvl_ratio>=1"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_positive_mask*sequence_level_ratio_greater_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_positive_sequence_lvl_ratio<=1"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_positive_mask*sequence_level_ratio_less_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_negative_sequence_lvl_ratio>=1"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_negative_mask*sequence_level_ratio_greater_than_1).detach().item()
+                        micro_batch_metrics["actor/mean_negative_sequence_lvl_ratio<=1"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_negative_mask*sequence_level_ratio_less_than_1).detach().item()
+
                         micro_batch_metrics["actor/mean_positive_token_ratio"] = verl_F.masked_mean(token_level_ratio, positive_mask).detach().item()
                         micro_batch_metrics["actor/mean_negative_token_ratio"] = verl_F.masked_mean(token_level_ratio, negative_mask).detach().item()
+                        micro_batch_metrics["actor/mean_positive_token_prob"] = verl_F.masked_mean(prob, positive_mask).detach().item()
+                        micro_batch_metrics["actor/mean_negative_token_prob"] = verl_F.masked_mean(prob, negative_mask).detach().item()
+                        micro_batch_metrics["actor/mean_positive_sequence_ratio"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_positive_mask).detach().item()
+                        micro_batch_metrics["actor/mean_negative_sequence_ratio"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_negative_mask).detach().item()
+
                         
                     #compute loss grad wrt logits
                     if compute_extra_grad_stats:
@@ -540,26 +547,44 @@ class DataParallelPPOActor(BasePPOActor):
                             micro_batch_metrics["actor/logits_grad_norm"] = logits_grad.norm(p=2).detach().item()
                             micro_batch_metrics["actor/logits_grad_mean"] = logits_grad.abs().mean().detach().item()
                             micro_batch_metrics["actor/logits_grad_max"] = logits_grad.abs().max().detach().item()
+                            micro_batch_metrics["actor/logits_grad_min"] = logits_grad.abs().min().detach().item()
                             micro_batch_metrics["actor/logits_mean"] = logits.mean().detach().item()
                             micro_batch_metrics["actor/logits_max"] = logits.max().detach().item()
                             micro_batch_metrics["actor/logits_min"] = logits.min().detach().item()
                             micro_batch_metrics["actor/logits_abs_min"] = logits.abs().min().detach().item()
 
-                            dpo_topr_positive_logits_grad = torch.autograd.grad(
-                                outputs=dpo_topr_positive,
-                                inputs=logits,
-                                retain_graph=True,
-                                create_graph=False,
-                            )[0]  # (nnz, vocab_size)
-                            micro_batch_metrics["actor/dpo_topr_positive_logits_grad_norm"] = dpo_topr_positive_logits_grad.norm(p=2).detach().item()
+                            # dpo_topr_positive_logits_grad = torch.autograd.grad(
+                            #     outputs=dpo_topr_positive,
+                            #     inputs=logits,
+                            #     retain_graph=True,
+                            #     create_graph=False,
+                            # )[0]  # (nnz, vocab_size)
+                            # micro_batch_metrics["actor/dpo_topr_positive_logits_grad_norm"] = dpo_topr_positive_logits_grad.norm(p=2).detach().item()
 
-                            dpo_topr_negative_logits_grad = torch.autograd.grad(
-                                outputs=dpo_topr_negative,
-                                inputs=logits,
+                            # dpo_topr_negative_logits_grad = torch.autograd.grad(
+                            #     outputs=dpo_topr_negative,
+                            #     inputs=logits,
+                            #     retain_graph=True,
+                            #     create_graph=False,
+                            # )[0]  # (nnz, vocab_size)
+                            # micro_batch_metrics["actor/dpo_topr_negative_logits_grad_norm"] = dpo_topr_negative_logits_grad.norm(p=2).detach().item()
+
+                            lm_head_weight = self.actor_module.module.lm_head.weight
+                            lm_head_weight_grad = torch.autograd.grad(
+                                outputs=pg_loss,
+                                inputs=lm_head_weight,
                                 retain_graph=True,
                                 create_graph=False,
-                            )[0]  # (nnz, vocab_size)
-                            micro_batch_metrics["actor/dpo_topr_negative_logits_grad_norm"] = dpo_topr_negative_logits_grad.norm(p=2).detach().item()
+                            )[0]  # (vocab_size, hidden_size)
+                            per_token_grad = lm_head_weight_grad.norm(p=2, dim=1)  # (vocab_size,)
+                            micro_batch_metrics["actor/lm_head_weight_grad_norm_mean"] = per_token_grad.mean().detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_grad_norm_max"] = per_token_grad.max().detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_grad_norm_min"] = per_token_grad.min().detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_median"] = per_token_grad.median().detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_argmax"] = torch.argmax(per_token_grad).detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_2nd_argmax"] = torch.topk(per_token_grad, k=2).indices[1].detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_3rd_argmax"] = torch.topk(per_token_grad, k=3).indices[2].detach().item()
+                            micro_batch_metrics["actor/lm_head_weight_abs_hist"] = per_token_grad.detach().cpu().tolist()
 
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
@@ -585,10 +610,10 @@ class DataParallelPPOActor(BasePPOActor):
                         mean_ref_ratio = verl_F.masked_mean(ref_ratio, response_mask)
                         mean_ref_ratio_positive = verl_F.masked_mean(ref_ratio, positive_mask)
                         mean_ref_ratio_negative = verl_F.masked_mean(ref_ratio, negative_mask)
-                        masked_positive_ref_ratio = ref_ratio.masked_select(positive_mask.bool())
-                        masked_negative_ref_ratio = ref_ratio.masked_select(negative_mask.bool())
-                        micro_batch_metrics["actor/ref_ratio_positive_hist"] = masked_positive_ref_ratio.detach().cpu().tolist()
-                        micro_batch_metrics["actor/ref_ratio_negative_hist"] = masked_negative_ref_ratio.detach().cpu().tolist()
+                        # masked_positive_ref_ratio = ref_ratio.masked_select(positive_mask.bool())
+                        # masked_negative_ref_ratio = ref_ratio.masked_select(negative_mask.bool())
+                        # micro_batch_metrics["actor/ref_ratio_positive_hist"] = masked_positive_ref_ratio.detach().cpu().tolist()
+                        # micro_batch_metrics["actor/ref_ratio_negative_hist"] = masked_negative_ref_ratio.detach().cpu().tolist()
 
                         micro_batch_metrics["actor/mean_ref_ratio"] = mean_ref_ratio.detach().item()
                         micro_batch_metrics["actor/mean_ref_ratio_positive"] = mean_ref_ratio_positive.detach().item()
