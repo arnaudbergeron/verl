@@ -108,6 +108,7 @@ class RLHFDataset(Dataset):
         self.truncation = config.get("truncation", "error")
         self.filter_overlong_prompts = config.get("filter_overlong_prompts", True)
         self.apply_chat_template_kwargs = config.get("apply_chat_template_kwargs", {})
+        self.split_size = config.get("split_size", 1.0)
 
         self.num_workers = config.get("filter_overlong_prompts_workers", max(1, os.cpu_count() // 4))
         self.num_workers = min(self.num_workers, os.cpu_count())
@@ -135,6 +136,9 @@ class RLHFDataset(Dataset):
             dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
             dataframes.append(dataframe)
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
+
+        if self.split_size < 1.0 and 'train' in parquet_file:
+            self.dataframe = self.dataframe.train_test_split(train_size=self.split_size)["train"]
 
         print(f"dataset len: {len(self.dataframe)}")
 

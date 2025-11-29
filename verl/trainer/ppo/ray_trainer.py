@@ -1240,19 +1240,11 @@ class RayPPOTrainer:
                     for actor_key, actor_value in actor_output_metrics.items():
                         if "hist" in actor_key:
                             _actor_metric_current[actor_key] = wandb.Histogram(actor_value[metrics_idx], num_bins=512)
-                            if "ref" in actor_key:
-                                for val in actor_value[metrics_idx]:
-                                    hist_vals_to_log = {}
-                                    hist_vals_to_log[f"{actor_key}_list"] = val
-                                    logger.log(data=hist_vals_to_log, step=hist_log_steps)
-                                    hist_log_steps += 1
-                                    
                         elif isinstance(actor_value, list):
                             try:
                                 _actor_metric_current[actor_key] = actor_value[metrics_idx]
                             except IndexError:
                                 _actor_metric_current[actor_key] = 0
-                                
                         else:
                             _actor_metric_current[actor_key] = actor_value
 
