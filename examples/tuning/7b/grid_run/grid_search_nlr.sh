@@ -1,6 +1,6 @@
 #!/bin/bash
 
-adv_estimation=(batch)
+adv_estimation=(question)
 # Pairs are of form (batch_size outer_loop_size)
 batch_outer_pairs=("32 934")
 loss_name=(dpo_topr)

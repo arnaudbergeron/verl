@@ -294,7 +294,7 @@ def compute_no_estimation_advantage_return(
 
     """
     expanded_rw = token_level_rewards.max(dim=-1, keepdim=True).values * response_mask
-    expanded_rw = (2*expanded_rw)-1
+    expanded_rw = (2*expanded_rw)-1 * response_mask
     return expanded_rw, expanded_rw.detach().clone()
 
 
@@ -345,6 +345,7 @@ def compute_grpo_outcome_advantage(
     epsilon: float = 1e-6,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
+    mu_logprobs=None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute advantage for GRPO, operating only on Outcome reward
@@ -377,14 +378,22 @@ def compute_grpo_outcome_advantage(
     scores = token_level_rewards.sum(dim=-1)
 
     id2score = defaultdict(list)
+    id2muprob = defaultdict(list)
     id2mean = {}
     id2std = {}
+    id2prob = {}
+
+    mu_probs_sequence = (mu_logprobs*response_mask).sum(dim=-1).exp() ** (1/response_mask.sum(dim=-1))
 
     with torch.no_grad():
         bsz = scores.shape[0]
         for i in range(bsz):
             id2score[index[i]].append(scores[i])
+            mu_seq_prob = mu_probs_sequence[i]
+            id2muprob[index[i]].append(mu_seq_prob)
         for idx in id2score:
+            mu_prob_tensor = torch.stack(id2muprob[idx])
+            id2prob[idx] = torch.sum(mu_prob_tensor)
             if len(id2score[idx]) == 1:
                 id2mean[idx] = torch.tensor(0.0)
                 id2std[idx] = torch.tensor(1.0)
@@ -395,13 +404,14 @@ def compute_grpo_outcome_advantage(
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
         for i in range(bsz):
+            mu_probs_sequence[i] = id2prob[index[i]] - mu_probs_sequence[i]
             if norm_adv_by_std_in_grpo:
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
             else:
                 scores[i] = scores[i] - id2mean[index[i]]
         scores = scores.unsqueeze(-1) * response_mask
 
-    return scores, scores
+    return scores, scores, mu_probs_sequence
 
 @register_adv_est(AdvantageEstimator.NGRPO) 
 def compute_ngrpo_outcome_advantage(
@@ -1031,6 +1041,7 @@ def compute_policy_loss_vanilla(
     log_prob: torch.Tensor,
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
+    occupancy_coef: torch.Tensor,
     loss_agg_mode: str = "token-mean",
     config: Optional[DictConfig | AlgoConfig] = None,
     rollout_log_probs: torch.Tensor | None = None,
@@ -1119,6 +1130,169 @@ def compute_policy_loss_dpo_topr(
     log_prob: torch.Tensor,
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
+    occupancy_coef: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | AlgoConfig] = None,
+    rollout_log_probs: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    DPO topr loss.
+
+    Adapted from
+    https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
+
+    Args:
+        old_log_prob (torch.Tensor):
+            Log-probabilities of actions under the old policy, shape (batch_size, response_length).
+        log_prob (torch.Tensor):
+            Log-probabilities of actions under the current policy, shape (batch_size, response_length).
+        advantages (torch.Tensor):
+            Advantage estimates for each action, shape (batch_size, response_length).
+        response_mask (torch.Tensor):
+            Mask indicating which tokens to include in the loss, shape (batch_size, response_length).
+        loss_agg_mode (str, optional):
+            Aggregation mode for `agg_loss`. Defaults to "token-mean".
+        config: `(verl.trainer.config.ActorConfig)`:
+            config for the actor.
+        rollout_log_probs: `(torch.Tensor)`:
+            log probabilities of actions under the rollout policy, shape (batch_size, response_length).
+    """
+
+    assert config is not None
+    assert not isinstance(config, AlgoConfig)
+    scale_ratio = config.clip_ratio
+    
+    prob_granularity = config.get("probability_granularity", "token")
+    if prob_granularity == 'sequence':
+        agg_log_prob = log_prob.sum(dim=-1, keepdim=True)
+        agg_old_log_prob = rollout_log_probs.sum(dim=-1, keepdim=True)
+        advantages = advantages[:,:1]
+        response_mask = response_mask[:,:1]
+        
+    elif prob_granularity == 'cumultative_sequence':
+        pi_prefix = torch.cumsum(log_prob, dim=-1) - log_prob
+        pi_prefix = pi_prefix.detach()
+        agg_log_prob = pi_prefix + log_prob  # stop full gradient flow
+        agg_log_prob = agg_log_prob * response_mask
+
+        mu_prefix = torch.cumsum(rollout_log_probs, dim=-1) - rollout_log_probs
+        mu_prefix = mu_prefix.detach()
+        agg_old_log_prob = mu_prefix + rollout_log_probs  # stop full gradient flow
+        agg_old_log_prob = agg_old_log_prob * response_mask
+    elif prob_granularity == 'token':
+        agg_log_prob = log_prob
+        agg_old_log_prob = rollout_log_probs
+    else:
+        raise NotImplementedError
+
+    negative_approx_kl = agg_log_prob - agg_old_log_prob
+    inverse_negative_approx_kl = -negative_approx_kl
+
+    ratio = torch.exp(negative_approx_kl)
+    scaled_ratio = 1 + scale_ratio*(ratio - 1)
+    inverted_ratio = torch.exp(inverse_negative_approx_kl)
+    scaled_inverted_ratio = 1 + scale_ratio*(inverted_ratio - 1)
+    # inverted_weighted_ratio = torch.exp(advantages*inverse_negative_approx_kl)
+
+    # prob = torch.exp(log_prob)
+    # old_prob = torch.exp(old_log_prob)
+
+    # positive_loss = log_prob-(old_prob+1)*torch.log(1 + inverted_ratio)
+    # negative_loss = ratio-torch.log(1 + ratio)
+
+    negative_loss = torch.log1p(scaled_ratio)
+    positive_loss = torch.log1p(scaled_inverted_ratio)
+
+    positive_mask = (advantages > 0).float()
+    negative_mask = (advantages <= 0).float()
+    pg_losses = positive_loss * positive_mask + negative_loss * negative_mask
+    pg_losses = pg_losses * advantages.abs()
+
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_clipfrac = verl_F.masked_mean(ratio, positive_mask*response_mask)
+    pg_clipfrac_lower = verl_F.masked_mean(ratio, negative_mask*response_mask)
+
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
+
+@register_policy_loss("dtpp")
+def compute_policy_loss_dtpp(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    occupancy_coef: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | AlgoConfig] = None,
+    rollout_log_probs: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    DPO topr loss.
+
+    Adapted from
+    https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
+
+    Args:
+        old_log_prob (torch.Tensor):
+            Log-probabilities of actions under the old policy, shape (batch_size, response_length).
+        log_prob (torch.Tensor):
+            Log-probabilities of actions under the current policy, shape (batch_size, response_length).
+        advantages (torch.Tensor):
+            Advantage estimates for each action, shape (batch_size, response_length).
+        response_mask (torch.Tensor):
+            Mask indicating which tokens to include in the loss, shape (batch_size, response_length).
+        loss_agg_mode (str, optional):
+            Aggregation mode for `agg_loss`. Defaults to "token-mean".
+        config: `(verl.trainer.config.ActorConfig)`:
+            config for the actor.
+        rollout_log_probs: `(torch.Tensor)`:
+            log probabilities of actions under the rollout policy, shape (batch_size, response_length).
+    """
+
+    assert config is not None
+    assert not isinstance(config, AlgoConfig)
+    scale_ratio = config.clip_ratio
+    
+    agg_log_prob = (log_prob * response_mask).sum(dim=-1, keepdim=True)
+    normalized_agg_log_prob = (agg_log_prob.exp() ** (1.0 / response_mask.sum(dim=-1, keepdim=True)))
+    agg_old_log_prob = (old_log_prob * response_mask).sum(dim=-1, keepdim=True)
+    advantages = advantages[:,:1]
+    response_mask = response_mask[:,:1]
+
+    negative_approx_kl = agg_log_prob - agg_old_log_prob
+    inverted_ratio = occupancy_coef/normalized_agg_log_prob
+
+    ratio = torch.exp(negative_approx_kl)
+    scaled_ratio = 1 + scale_ratio*(ratio - 1)
+    scaled_inverted_ratio = 1 + scale_ratio*(inverted_ratio - 1)
+
+    negative_loss = torch.log1p(scaled_ratio)
+    positive_loss = torch.log1p(scaled_inverted_ratio)
+
+    positive_mask = (advantages > 0).float()
+    negative_mask = (advantages <= 0).float()
+    pg_losses = positive_loss * positive_mask + negative_loss * negative_mask
+    pg_losses = pg_losses * advantages.abs()
+
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_clipfrac = verl_F.masked_mean(occupancy_coef, positive_mask)
+    pg_clipfrac_lower = verl_F.masked_mean(normalized_agg_log_prob, negative_mask)
+
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+    # pg_loss = pg_losses.sum()
+
+    return pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower
+
+
+@register_policy_loss("dpo_topr_curved")
+def compute_policy_loss_dpo_topr_curved(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
     loss_agg_mode: str = "token-mean",
     config: Optional[DictConfig | AlgoConfig] = None,
     rollout_log_probs: torch.Tensor | None = None,
@@ -1179,14 +1353,11 @@ def compute_policy_loss_dpo_topr(
     inverted_ratio = torch.exp(inverse_negative_approx_kl)
     # inverted_weighted_ratio = torch.exp(advantages*inverse_negative_approx_kl)
 
-    # prob = torch.exp(log_prob)
-    # old_prob = torch.exp(old_log_prob)
+    positive_loss = inverted_ratio-torch.log(1 + inverted_ratio)
+    negative_loss = ratio-torch.log(1 + ratio)
 
-    # positive_loss = log_prob-(old_prob+1)*torch.log(1 + inverted_ratio)
-    # negative_loss = ratio-torch.log(1 + ratio)
-
-    negative_loss = torch.log(1 + ratio)
-    positive_loss = torch.log(1 + inverted_ratio)
+    # negative_loss = torch.log(1 + ratio)
+    # positive_loss = torch.log(1 + inverted_ratio)
 
     positive_mask = (advantages > 0).float()
     negative_mask = (advantages <= 0).float()
@@ -1209,6 +1380,7 @@ def compute_policy_loss_topr(
     log_prob: torch.Tensor,
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
+    occupancy_coef: torch.Tensor,
     loss_agg_mode: str = "token-mean",
     config: Optional[DictConfig | AlgoConfig] = None,
     rollout_log_probs: torch.Tensor | None = None,
@@ -1238,7 +1410,9 @@ def compute_policy_loss_topr(
     topr_clip_negative_low, topr_clip_negative_high = 0,1
     topr_clip_positive_low, topr_clip_positive_high = 1,1
 
-    negative_approx_kl = log_prob - old_log_prob
+    negative_approx_kl = log_prob - rollout_log_probs
+    # Clamp negative_approx_kl for stability
+    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
     ratio = torch.exp(negative_approx_kl)
 
     low_clip_mask_negative = ratio <= topr_clip_negative_low

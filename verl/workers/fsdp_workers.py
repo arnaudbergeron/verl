@@ -513,17 +513,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if role == "actor" and optim_config is not None:
             from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 
-            actor_optimizer = optim.AdamW(
-                actor_module_fsdp.parameters(),
-                lr=optim_config.lr,
-                betas=optim_config.get("betas", (0.9, 0.999)),
-                weight_decay=optim_config.get("weight_decay", 1e-2),
-            )
-
-            # actor_optimizer = optim.SGD(
+            # actor_optimizer = optim.AdamW(
             #     actor_module_fsdp.parameters(),
             #     lr=optim_config.lr,
+            #     betas=optim_config.get("betas", (0.9, 0.999)),
+            #     weight_decay=optim_config.get("weight_decay", 1e-2),
             # )
+
+            actor_optimizer = optim.SGD(
+                actor_module_fsdp.parameters(),
+                lr=optim_config.lr,
+            )
 
             total_steps = optim_config.get("total_training_steps", 0)
             num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))

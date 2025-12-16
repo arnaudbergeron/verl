@@ -131,11 +131,27 @@ class RLHFDataset(Dataset):
 
     def _read_files_and_tokenize(self):
         dataframes = []
+        common_columns = None
+
         for parquet_file in self.data_files:
-            # read parquet files and cache
-            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
-            dataframes.append(dataframe)
-        self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
+            dataset = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            
+            if common_columns is None:
+                common_columns = set(dataset.column_names)
+            else:
+                # Find intersection with previous datasets
+                common_columns = common_columns.intersection(set(dataset.column_names))
+            
+            dataframes.append(dataset)
+
+        processed_dataframes = []
+        for ds in dataframes:
+            extra_cols = [col for col in ds.column_names if col not in common_columns]
+            if extra_cols:
+                ds = ds.remove_columns(extra_cols)
+            processed_dataframes.append(ds)
+
+        self.dataframe: datasets.Dataset = datasets.concatenate_datasets(processed_dataframes)
 
         if self.split_size < 1.0 and 'train' in parquet_file:
             self.dataframe = self.dataframe.train_test_split(train_size=self.split_size)["train"]

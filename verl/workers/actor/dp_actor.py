@@ -376,6 +376,7 @@ class DataParallelPPOActor(BasePPOActor):
             "old_log_probs",
             "advantages",
             "token_level_rewards",
+            "occupancy_coef",
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
@@ -421,6 +422,7 @@ class DataParallelPPOActor(BasePPOActor):
                     old_log_prob = model_inputs["old_log_probs"]
                     rollout_log_probs = model_inputs["rollout_log_probs"] if self.config.tis_imp_ratio_cap > 0 else None
                     advantages = model_inputs["advantages"]
+                    occupancy_coef = model_inputs["occupancy_coef"]
 
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
@@ -456,6 +458,7 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_agg_mode=loss_agg_mode,
                         config=self.config,
                         rollout_log_probs=rollout_log_probs,
+                        occupancy_coef=occupancy_coef,
                     )
 
                     with torch.no_grad():
@@ -531,6 +534,10 @@ class DataParallelPPOActor(BasePPOActor):
                         micro_batch_metrics["actor/mean_negative_token_prob"] = verl_F.masked_mean(prob, negative_mask).detach().item()
                         micro_batch_metrics["actor/mean_positive_sequence_ratio"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_positive_mask).detach().item()
                         micro_batch_metrics["actor/mean_negative_sequence_ratio"] = verl_F.masked_mean(sequence_level_ratio, sequence_level_negative_mask).detach().item()
+                        micro_batch_metrics["actor/median_positive_token_ratio"] = torch.median(positive_token_level_ratio).detach().item()
+                        micro_batch_metrics["actor/median_negative_token_ratio"] = torch.median(negative_token_level_ratio).detach().item() 
+                        micro_batch_metrics["actor/median_positive_sequence_ratio"] = torch.median(postive_sequence_level_ratio).detach().item()
+                        micro_batch_metrics["actor/median_negative_sequence_ratio"] = torch.median(negative_sequence_level_ratio).detach().item()
 
                         
                     #compute loss grad wrt logits
